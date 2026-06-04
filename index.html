@@ -6,6 +6,7 @@
 <title>Botequim Clima — Pesquisa de Clima automática no Zap</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -66,7 +67,8 @@ const CFG = {
   SUPABASE_KEY: 'sb_publishable_dW-JZ00n74dSLCrznBJ6gw_K8AE1VIq',
   // Edge function de IA (gera perguntas + resumo de sentimento). Deploy = fase 2.
   // Enquanto não existir, o app usa o gerador local (demo nunca quebra).
-  EDGE_IA_URL: '', // ex: 'https://kuyhkltbwlkvtgbabscv.supabase.co/functions/v1/clima-ia'
+  EDGE_IA_URL: 'https://kuyhkltbwlkvtgbabscv.supabase.co/functions/v1/clima-ia',
+  WPP_URL: 'https://kuyhkltbwlkvtgbabscv.supabase.co/functions/v1/clima-wpp',
   // MODO DEMO: true = salva no navegador (localStorage), funciona JÁ, sem depender
   // de criar tabela. Trocar pra false quando as tabelas clima_* estiverem criadas.
   MODO_DEMO: false,
@@ -338,30 +340,75 @@ function etapaEmpresa(){
   <input id="f-titulo" value="${W.titulo||'Pesquisa de Clima'}" class="w-full border border-cinza-200 rounded-card px-4 py-3 focus:border-roxo-500 outline-none">
   ${navWizard(null, 'salvarEmpresa()', 'Continuar →')}`;
 }
-function salvarEmpresa(){
+async function salvarEmpresa(){
   W.empresa = document.getElementById('f-empresa').value.trim();
   W.titulo  = document.getElementById('f-titulo').value.trim() || 'Pesquisa de Clima';
   if(!W.empresa){ toast('Coloca o nome da casa 🙂'); return; }
+  // puxa funcionários já salvos dessa casa (ficam na base pra sempre)
+  if(!W.funcionarios.length){
+    const salvos = await DB.listarFuncionarios(W.empresa);
+    if(salvos && salvos.length){ W.funcionarios = salvos.map(f=>({ ...f, token:f.token||tok() })); toast(`${salvos.length} funcionário(s) já cadastrado(s) nessa casa ✅`); }
+  }
   etapa=2; renderEtapa();
 }
 
-// --- Etapa 2: funcionários (o "efeito guardanapo")
+// --- Etapa 2: funcionários
 function etapaFuncionarios(){
   return `<h2 class="text-lg font-extrabold mb-1">Quem vai responder?</h2>
-  <p class="text-cinza-500 text-sm mb-4">Digite os nomes (1 por linha). Eles viram a lista clicável da pesquisa.
-  O telefone é opcional — preencha pra mandar um <b>link individual</b> pra cada um (trava pra ninguém responder pelo outro).</p>
-  <div class="bg-roxo-50 border border-roxo-100 rounded-card p-3 mb-4 text-[13px] text-roxo-800">
-    💡 <b>Na reunião:</b> pergunte "quantas funcionárias são?" e digite os nomes do guardanapo aqui na frente delas.
-  </div>
-  <div class="flex gap-2 mb-2">
-    <input id="f-nome" placeholder="Nome completo" class="flex-1 border border-cinza-200 rounded-card px-4 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){addFunc();}">
-    <input id="f-tel" placeholder="(opcional) telefone" class="w-40 border border-cinza-200 rounded-card px-3 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){addFunc();}">
+  <p class="text-cinza-500 text-sm mb-4">Nome e telefone são <b>obrigatórios</b> — cada um recebe um <b>link individual</b> (trava pra ninguém responder pelo outro). Fica <b>salvo na base pra sempre</b>: na próxima pesquisa dessa casa já vem preenchido.</p>
+
+  <label class="block text-sm font-semibold mb-2">📎 Importar de um arquivo (o jeito rápido)</label>
+  <label class="block border-2 border-dashed border-roxo-200 rounded-card p-4 mb-4 text-center cursor-pointer hover:bg-roxo-50">
+    <input type="file" accept="image/*,.pdf,.xlsx,.xls,.csv" class="hidden" onchange="importarArquivo(this)">
+    <div class="text-3xl mb-1">🖼️📄📊</div>
+    <div class="text-sm font-semibold text-roxo-700">Mandar foto, PDF ou Excel</div>
+    <div class="text-[11px] text-cinza-500">A IA lê e puxa nome + telefone automático</div>
+  </label>
+
+  <label class="block text-sm font-semibold mb-2">Ou digite um a um</label>
+  <div class="flex gap-2 mb-4">
+    <input id="f-nome" placeholder="Nome completo" class="flex-1 border border-cinza-200 rounded-card px-4 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){document.getElementById('f-tel').focus();}">
+    <input id="f-tel" placeholder="Telefone (c/ DDD)" inputmode="numeric" class="w-40 border border-cinza-200 rounded-card px-3 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){addFunc();}">
     <button onclick="addFunc()" class="bg-roxo-500 text-white font-bold px-4 rounded-card">+</button>
   </div>
-  <textarea id="f-bulk" rows="2" placeholder="Ou cole vários nomes de uma vez (1 por linha) e clique em Adicionar lista" class="w-full border border-cinza-200 rounded-card px-4 py-2.5 text-sm mb-2 focus:border-roxo-500 outline-none"></textarea>
-  <button onclick="addBulk()" class="text-roxo-600 text-sm font-semibold mb-4">+ Adicionar lista colada</button>
   <div id="lista-func"></div>
   ${navWizard('etapaBack(1)', 'salvarFunc()', 'Continuar →')}`;
+}
+async function importarArquivo(inp){
+  const file = inp.files[0]; if(!file) return;
+  const ext = (file.name.split('.').pop()||'').toLowerCase();
+  toast('Lendo arquivo… ✨');
+  try{
+    if(['xlsx','xls','csv'].includes(ext)){
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type:'array' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header:1 });
+      addContatosFromRows(rows);
+    } else {
+      const b64 = await fileToB64(file);
+      const res = await fetch(CFG.EDGE_IA_URL, { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ acao:'extrair_contatos', mime:file.type||'image/jpeg', dataB64:b64 }) });
+      const j = await res.json();
+      let n=0; (j.contatos||[]).forEach(c=>{ if(c&&c.nome){ W.funcionarios.push({ id:uid(), empresa:W.empresa, nome:String(c.nome).trim(), telefone:String(c.telefone||'').replace(/\D/g,''), token:tok() }); n++; } });
+      renderListaFunc(); toast(n? `${n} pessoa(s) importada(s) ✅` : 'Não achei nomes no arquivo 🤔');
+    }
+  }catch(e){ console.error(e); toast('Não consegui ler esse arquivo'); }
+  inp.value='';
+}
+function fileToB64(file){ return new Promise(r=>{ const fr=new FileReader(); fr.onload=()=>r(String(fr.result).split(',')[1]); fr.readAsDataURL(file); }); }
+function addContatosFromRows(rows){
+  rows = (rows||[]).filter(r=>r && r.some(c=>String(c||'').trim()));
+  if(!rows.length){ toast('Planilha vazia'); return; }
+  const header = rows[0].map(x=>String(x||'').toLowerCase());
+  let ni = header.findIndex(h=>h.includes('nome'));
+  let ti = header.findIndex(h=>h.includes('tel')||h.includes('cel')||h.includes('fone')||h.includes('whats'));
+  let start = 1;
+  if(ni===-1){ ni=0; ti = ti===-1?1:ti; start=0; } // sem cabeçalho: col0=nome, col1=telefone
+  let n=0;
+  for(let i=start;i<rows.length;i++){ const nome=String(rows[i][ni]||'').trim(); if(!nome) continue;
+    const tel=String(rows[i][ti]??'').replace(/\D/g,'');
+    W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:tel, token:tok() }); n++; }
+  renderListaFunc(); toast(`${n} pessoa(s) importada(s) ✅`);
 }
 function renderListaFunc(){
   const el = document.getElementById('lista-func'); if(!el) return;
@@ -371,31 +418,32 @@ function renderListaFunc(){
     <div class="flex items-center gap-2 bg-white border border-cinza-200 rounded-card px-3 py-2">
       <div class="w-8 h-8 rounded-pill bg-roxo-100 text-roxo-700 grid place-items-center font-bold text-sm">${(f.nome[0]||'?').toUpperCase()}</div>
       <div class="flex-1"><div class="font-semibold text-sm">${f.nome}</div>
-        ${f.telefone?`<div class="text-[11px] text-cinza-500">${f.telefone} · link individual</div>`:`<div class="text-[11px] text-cinza-400">sem telefone · usa link geral</div>`}</div>
+        ${f.telefone?`<div class="text-[11px] text-cinza-500">📱 ${f.telefone} · link individual</div>`:`<div class="text-[11px] text-alerta">⚠️ falta o telefone</div>`}</div>
       <button onclick="rmFunc('${f.id}')" class="text-cinza-400 hover:text-alerta">✕</button>
     </div>`).join('')}</div>`;
 }
 function addFunc(){
   const n = document.getElementById('f-nome'), t = document.getElementById('f-tel');
-  const nome = n.value.trim(); if(!nome) return;
-  W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:t.value.trim(), token:tok() });
+  const nome = n.value.trim(); const tel = t.value.replace(/\D/g,'');
+  if(!nome){ toast('Falta o nome'); n.focus(); return; }
+  if(!tel){ toast('Telefone é obrigatório (pro link individual)'); t.focus(); return; }
+  W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:tel, token:tok() });
   n.value=''; t.value=''; n.focus(); renderListaFunc();
 }
-function addBulk(){
-  const ta = document.getElementById('f-bulk');
-  ta.value.split('\n').map(s=>s.trim()).filter(Boolean).forEach(nome=>{
-    W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:'', token:tok() });
-  });
-  ta.value=''; renderListaFunc();
-}
 function rmFunc(id){ W.funcionarios = W.funcionarios.filter(f=>f.id!==id); renderListaFunc(); }
-function salvarFunc(){ if(W.funcionarios.length===0){ toast('Adicione pelo menos 1 pessoa'); return; } etapa=3; renderEtapa(); }
+function salvarFunc(){
+  if(W.funcionarios.length===0){ toast('Adicione pelo menos 1 pessoa'); return; }
+  const semTel = W.funcionarios.filter(f=>!f.telefone).length;
+  if(semTel){ toast(`${semTel} pessoa(s) sem telefone — preencha (clique no ✕ e readicione, ou edite o arquivo)`); return; }
+  DB.salvarFuncionarios(W.funcionarios); // salva na base pra sempre
+  etapa=3; renderEtapa();
+}
 function etapaBack(n){ etapa=n; renderEtapa(); }
 
 // --- Etapa 3: contexto pra IA
 function etapaContexto(){
   return `<h2 class="text-lg font-extrabold mb-1">Conte pra IA sobre a casa</h2>
-  <p class="text-cinza-500 text-sm mb-5">Quanto melhor o contexto, melhores as perguntas. (É o "papo no zap" automatizado.)</p>
+  <p class="text-cinza-500 text-sm mb-5">Quanto melhor o contexto, melhores as perguntas que a IA cria.</p>
   <label class="block text-sm font-semibold mb-1">Que tipo de operação é?</label>
   <input id="c-tipo" value="${W.contexto.tipo}" placeholder="Ex: bar de petiscos, 2 turnos, salão + cozinha" class="w-full border border-cinza-200 rounded-card px-4 py-3 mb-4 focus:border-roxo-500 outline-none">
   <label class="block text-sm font-semibold mb-1">O que você mais quer descobrir?</label>
@@ -460,8 +508,9 @@ function etapaPublicar(){
     <div class="flex justify-between py-1"><span class="text-cinza-500">Casa</span><b>${W.empresa}</b></div>
     <div class="flex justify-between py-1"><span class="text-cinza-500">Pessoas</span><b>${W.funcionarios.length}</b></div>
     <div class="flex justify-between py-1"><span class="text-cinza-500">Perguntas</span><b>${W.perguntas.length}</b></div>
-    <div class="flex justify-between py-1"><span class="text-cinza-500">Links individuais</span><b>${W.funcionarios.filter(f=>f.telefone).length} c/ telefone</b></div>
+    <div class="flex justify-between py-1"><span class="text-cinza-500">Tipo de link</span><b>${W.anonima?'Anônimo (abre direto)':'Individual por pessoa'}</b></div>
   </div>
+  <div class="text-[11px] text-cinza-400 mt-1">Os funcionários ficam salvos na base dessa casa pra sempre.</div>
   ${navWizard('etapaBack(4)', 'publicar()', '✅ Publicar e gerar link')}`;
 }
 async function publicar(){
@@ -484,18 +533,23 @@ async function viewResponder(root, id, token){
   const p = await DB.getPesquisa(id);
   if(!p){ root.innerHTML = telaErro('Pesquisa não encontrada'); return; }
   R = { pesquisa:p, func:null, idx:0, respostas:{}, comentarios:{}, concordou:false };
-  // link individual? trava no funcionário do token
-  if(token){ R.func = (p.funcionarios||[]).find(f=>f.token===token) || null; }
   root.innerHTML = `<div class="max-w-md mx-auto min-h-screen flex flex-col">
     ${topbarPublico(p)}
     <div id="rbody" class="flex-1 px-5 py-6"></div>
   </div>`;
   if(p.status!=='aberta'){ document.getElementById('rbody').innerHTML = telaInfo('Esta pesquisa está fechada.','✅'); return; }
-  // já respondeu?
-  if(R.func && await DB.jaRespondeu(p.id, R.func.id)){
-    document.getElementById('rbody').innerHTML = telaInfo('Você já respondeu esta pesquisa. Obrigado! 💜','🙌'); return;
+  // ANÔNIMA: abre direto, sem identificar
+  if(p.anonima){ renderConsent(); return; }
+  // LINK INDIVIDUAL: identifica pelo token
+  if(token){ R.func = (p.funcionarios||[]).find(f=>f.token===token) || null; }
+  if(R.func){
+    if(await DB.jaRespondeu(p.id, R.func.id)){
+      document.getElementById('rbody').innerHTML = telaInfo('Você já respondeu esta pesquisa. Obrigado! 💜','🙌'); return;
+    }
+    renderConsent(); return;
   }
-  if(R.func) renderConsent(); else renderEscolherNome();
+  // LINK GERAL (sem token): escolhe o nome (some quem já respondeu)
+  renderEscolherNome();
 }
 function topbarPublico(p){
   return `<header class="bg-gradient-to-r from-roxo-700 to-roxo-900 text-white px-5 py-5 text-center">
@@ -503,13 +557,17 @@ function topbarPublico(p){
     <div class="font-extrabold text-lg">${p.titulo}</div>
   </header>`;
 }
-function renderEscolherNome(){
+async function renderEscolherNome(){
   const p = R.pesquisa;
+  const resp = await DB.listarRespostas(p.id);
+  const feitos = new Set(resp.map(r=>r.func_id).filter(Boolean));
+  const restantes = (p.funcionarios||[]).filter(f=>!feitos.has(f.id));
+  if(!restantes.length){ document.getElementById('rbody').innerHTML = telaInfo('Todo mundo já respondeu! Obrigado 💜','🎉'); return; }
   document.getElementById('rbody').innerHTML = `
     <h2 class="text-center font-bold text-lg mb-1">Quem é você?</h2>
     <p class="text-center text-cinza-500 text-sm mb-5">Toque no seu nome pra começar.</p>
     <div class="space-y-2">
-      ${(p.funcionarios||[]).map(f=>`<button onclick="escolherNome('${f.id}')" class="w-full text-left bg-white border border-cinza-200 rounded-card px-4 py-3 flex items-center gap-3 hover:border-roxo-500">
+      ${restantes.map(f=>`<button onclick="escolherNome('${f.id}')" class="w-full text-left bg-white border border-cinza-200 rounded-card px-4 py-3 flex items-center gap-3 hover:border-roxo-500">
         <div class="w-9 h-9 rounded-pill bg-roxo-100 text-roxo-700 grid place-items-center font-bold">${(f.nome[0]||'?').toUpperCase()}</div>
         <span class="font-semibold">${f.nome}</span></button>`).join('')}
     </div>`;
@@ -523,10 +581,11 @@ async function escolherNome(fid){
 }
 function renderConsent(){
   const anon = R.pesquisa.anonima;
+  const nome = R.func ? R.func.nome.split(' ')[0] : null;
   document.getElementById('rbody').innerHTML = `
     <div class="text-center mb-6">
       <div class="text-4xl mb-2">👋</div>
-      <div class="font-bold text-lg">Oi, ${R.func.nome.split(' ')[0]}!</div>
+      <div class="font-bold text-lg">${nome? 'Oi, '+nome+'!' : 'Bem-vindo(a)!'}</div>
       <p class="text-cinza-500 text-sm mt-1">São ${R.pesquisa.perguntas.length} perguntas rápidas. Leva uns 2 minutinhos.</p>
     </div>
     <div class="bg-${anon?'sucesso':'roxo-50'} ${anon?'text-white':'text-roxo-800'} rounded-card px-4 py-3 text-sm mb-5">
@@ -630,10 +689,15 @@ async function viewDashboard(root, id){
       </div>
     </div>
 
-    <!-- IA: resumo + ação -->
+    <!-- IA: análise sob demanda -->
     <div class="rounded-card p-4 text-white" style="background:linear-gradient(135deg,#7F00FF,#FF007F)">
-      <div class="flex items-center gap-2 text-sm font-bold mb-1">✨ Leitura da IA</div>
-      <div id="ia-box" class="text-sm leading-relaxed opacity-95">${resp.length? 'Analisando…' : 'Aguardando as primeiras respostas pra analisar.'}</div>
+      <div class="flex items-center gap-2 text-sm font-bold mb-2">✨ Análise com IA</div>
+      <div id="ia-box" class="text-sm leading-relaxed opacity-95">
+        ${resp.length
+          ? `<button onclick="analisarTudo('${p.id}')" class="bg-white text-roxo-700 font-bold text-sm px-4 py-2.5 rounded-pill w-full">Analisar todas as respostas →</button>
+             <div class="text-[11px] opacity-80 mt-2 text-center">A IA lê tudo (notas + comentários) e te dá um panorama personalizado.</div>`
+          : 'Aguardando as primeiras respostas pra analisar.'}
+      </div>
     </div>
 
     <!-- Pilares -->
@@ -653,13 +717,43 @@ async function viewDashboard(root, id){
       <div class="space-y-2">${m.comentarios.map(c=>`<div class="text-sm bg-cinza-50 rounded-card px-3 py-2 border border-cinza-100">"${c}"</div>`).join('')}</div>
     </div>`:''}
 
+    <!-- Enviar link individual pra cada funcionário -->
+    <details class="bg-white rounded-card shadow-card p-4">
+      <summary class="text-sm font-bold cursor-pointer">📤 Enviar pra cada funcionário (${(p.funcionarios||[]).length})</summary>
+      <div class="text-[11px] text-cinza-500 mt-1 mb-3">Cada um recebe o <b>link individual</b> dele (trava 1 resposta por pessoa).</div>
+      <div class="space-y-2">
+        ${(p.funcionarios||[]).map(f=>{
+          const link = linkPublico(p.id, f.token);
+          const msg = encodeURIComponent(`Oi ${f.nome.split(' ')[0]}! 👋 Responde nossa pesquisa de clima, é rapidinho (2 min) e ajuda demais: ${link}`);
+          const wa = f.telefone? `https://wa.me/55${f.telefone}?text=${msg}` : '';
+          return `<div class="flex items-center gap-2 border border-cinza-100 rounded-card px-3 py-2">
+            <div class="flex-1 text-sm font-semibold">${f.nome}<div class="text-[11px] text-cinza-400">${f.telefone||'sem telefone'}</div></div>
+            ${wa?`<a href="${wa}" target="_blank" class="text-[12px] font-bold bg-[#25D366] text-white px-3 py-1.5 rounded-pill">WhatsApp</a>`:''}
+            <button onclick="copiarTexto('${link}')" class="text-[12px] font-bold bg-cinza-100 text-cinza-700 px-3 py-1.5 rounded-pill">Copiar</button>
+          </div>`;
+        }).join('')}
+      </div>
+    </details>
+
     <div class="flex gap-2">
-      <button onclick="copiarLink('${p.id}')" class="flex-1 text-sm font-semibold bg-roxo-50 text-roxo-700 py-2.5 rounded-pill">Copiar link da pesquisa</button>
+      <button onclick="copiarLink('${p.id}')" class="flex-1 text-sm font-semibold bg-roxo-50 text-roxo-700 py-2.5 rounded-pill">Copiar link geral</button>
       <button onclick="render()" class="flex-1 text-sm font-semibold bg-cinza-100 text-cinza-700 py-2.5 rounded-pill">↻ Atualizar</button>
     </div>
   </main>`;
-  // IA assíncrona
-  if(resp.length) montarLeituraIA(p, m);
+}
+async function copiarTexto(t){ try{ await navigator.clipboard.writeText(t); toast('Copiado! 👍'); }catch{ prompt('Copie:', t); } }
+async function analisarTudo(id){
+  const box = document.getElementById('ia-box'); if(box) box.innerHTML = '🧠 Lendo todas as respostas e montando seu panorama…';
+  const p = await DB.getPesquisa(id); const resp = await DB.listarRespostas(id); const m = metricas(p, resp);
+  if(!resp.length){ if(box) box.innerHTML='Ainda não há respostas.'; return; }
+  if(CFG.EDGE_IA_URL){
+    try{
+      const res = await fetch(CFG.EDGE_IA_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({acao:'analisar', empresa:p.empresa, metricas:m})});
+      if(res.ok){ const j=await res.json(); if(j.texto){ if(box) box.innerHTML=j.texto; return; } }
+    }catch(e){ /* cai pro local */ }
+  }
+  if(box) box.innerHTML = leituraLocal(m);
 }
 function metricas(p, resp){
   const total = (p.funcionarios||[]).length||0;
