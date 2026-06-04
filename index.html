@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Botequim Clima — Pesquisa de Clima automática no Zap</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      fontFamily: { sans: ['Inter', 'sans-serif'] },
+      colors: {
+        roxo:    { 50:'#F4EBFF',100:'#E5CCFF',200:'#C99EFF',500:'#7F00FF',600:'#6E00E0',700:'#5A00BF',800:'#4A0099',900:'#310066' },
+        magenta: { 50:'#FFEBF5',100:'#FFD1E6',500:'#FF007F',600:'#E60072' },
+        cinza:   { 50:'#F4F6F9',100:'#EAEDF2',200:'#DDE0E8',300:'#C7CBD6',500:'#7F8C8D',700:'#5A6473',900:'#333333' },
+        sucesso:'#2ECC71', alerta:'#E74C3C', aviso:'#F39C12', info:'#3498DB',
+      },
+      boxShadow: { card:'0 1px 3px rgba(0,0,0,.04),0 2px 6px rgba(0,0,0,.05)', pop:'0 8px 24px rgba(0,0,0,.10),0 2px 6px rgba(0,0,0,.05)' },
+      borderRadius: { card:'14px', pill:'9999px' },
+    } }
+  };
+</script>
+<style>
+  body{font-family:'Inter',sans-serif}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:#D6D8E2;border-radius:4px}
+  .face-btn{transition:transform .12s ease, background .15s ease}
+  .face-btn:hover{transform:scale(1.08)}
+  .face-sel{transform:scale(1.12)}
+  .card-q{transition:all .15s ease}
+  .card-q.sel{border-color:#7F00FF;background:#F4EBFF;box-shadow:0 6px 16px rgba(127,0,255,.15)}
+  .fade{animation:fade .35s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .chip{transition:all .12s ease}
+</style>
+</head>
+<body class="bg-cinza-50 text-cinza-900 min-h-screen">
+
+<!-- =================================================================
+     APP — single file. Rotas por hash:
+       #/            -> Home (admin: lista + criar)
+       #/criar       -> Wizard de criação
+       #/r/<id>      -> Responder (link público que vai no zap)
+       #/r/<id>/<token> -> Responder com link individual (trava 1 por pessoa)
+       #/dash/<id>   -> Dashboard (celular)
+================================================================= -->
+
+<div id="root" class="min-h-screen"></div>
+
+<!-- Toast -->
+<div id="toast" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 hidden">
+  <div class="bg-cinza-900 text-white text-sm px-4 py-2.5 rounded-pill shadow-pop"></div>
+</div>
+
+<script>
+/* ====================================================================
+   CONFIG
+==================================================================== */
+const CFG = {
+  // Supabase do PDV Nexus (projeto caixinha-botequim). Tabelas prefixo clima_.
+  SUPABASE_URL: 'https://kuyhkltbwlkvtgbabscv.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_dW-JZ00n74dSLCrznBJ6gw_K8AE1VIq',
+  // Edge function de IA (gera perguntas + resumo de sentimento). Deploy = fase 2.
+  // Enquanto não existir, o app usa o gerador local (demo nunca quebra).
+  EDGE_IA_URL: '', // ex: 'https://kuyhkltbwlkvtgbabscv.supabase.co/functions/v1/clima-ia'
+  // MODO DEMO: true = salva no navegador (localStorage), funciona JÁ, sem depender
+  // de criar tabela. Trocar pra false quando as tabelas clima_* estiverem criadas.
+  MODO_DEMO: true,
+};
+
+/* ====================================================================
+   CAMADA DE DADOS (DB) — abstrai localStorage vs Supabase.
+   Mesma API nos dois modos: o resto do app não sabe qual está ativo.
+==================================================================== */
+let sb = null;
+if (!CFG.MODO_DEMO) {
+  try { sb = supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY); }
+  catch(e){ console.warn('Supabase off, caindo pro modo demo', e); CFG.MODO_DEMO = true; }
+}
+
+const LS = {
+  get(k, def){ try{ return JSON.parse(localStorage.getItem('clima_'+k)) ?? def }catch{ return def } },
+  set(k, v){ localStorage.setItem('clima_'+k, JSON.stringify(v)) },
+};
+
+// IDs simples e tokens (sem libs)
+function uid(){ return 'id'+Math.abs(hashStr(navigator.userAgent+performance.now()+Object.keys(localStorage).length+Math.floor(performance.now()*1000))).toString(36) }
+function tok(){ let s=''; const a='abcdefghijkmnpqrstuvwxyz23456789'; const seed=Math.floor(performance.now()*1e6); for(let i=0;i<6;i++){ s+=a[(seed>>(i*3))%a.length] } return s+(Object.keys(localStorage).length%97).toString(36) }
+function hashStr(s){ let h=0; for(let i=0;i<s.length;i++){ h=(h<<5)-h+s.charCodeAt(i); h|=0 } return h }
+
+const DB = {
+  // ---- PESQUISAS ----
+  async listarPesquisas(){
+    if (CFG.MODO_DEMO) return LS.get('pesquisas', []).sort((a,b)=>b.criado_em-a.criado_em);
+    const { data } = await sb.from('clima_pesquisas').select('*').order('criado_em',{ascending:false});
+    return data||[];
+  },
+  async getPesquisa(id){
+    if (CFG.MODO_DEMO) return (LS.get('pesquisas',[])).find(p=>p.id===id) || null;
+    const { data } = await sb.from('clima_pesquisas').select('*').eq('id',id).single();
+    return data||null;
+  },
+  async salvarPesquisa(p){
+    if (CFG.MODO_DEMO){ const arr=LS.get('pesquisas',[]); const i=arr.findIndex(x=>x.id===p.id);
+      if(i>=0)arr[i]=p; else arr.push(p); LS.set('pesquisas',arr); return p; }
+    const { data } = await sb.from('clima_pesquisas').upsert(p).select().single(); return data;
+  },
+  // ---- FUNCIONÁRIOS ----
+  async listarFuncionarios(empresa){
+    if (CFG.MODO_DEMO) return LS.get('func',[]).filter(f=>f.empresa===empresa);
+    const { data } = await sb.from('clima_funcionarios').select('*').eq('empresa',empresa).order('nome');
+    return data||[];
+  },
+  async salvarFuncionarios(lista){
+    if (CFG.MODO_DEMO){ const arr=LS.get('func',[]);
+      lista.forEach(f=>{ const i=arr.findIndex(x=>x.id===f.id); if(i>=0)arr[i]=f; else arr.push(f); });
+      LS.set('func',arr); return lista; }
+    const { data } = await sb.from('clima_funcionarios').upsert(lista).select(); return data;
+  },
+  // ---- RESPOSTAS ----
+  async jaRespondeu(pesquisaId, funcId){
+    if (!funcId) return false;
+    if (CFG.MODO_DEMO) return LS.get('resp',[]).some(r=>r.pesquisa_id===pesquisaId && r.func_id===funcId);
+    const { data } = await sb.from('clima_respostas').select('id').eq('pesquisa_id',pesquisaId).eq('func_id',funcId);
+    return (data||[]).length>0;
+  },
+  async salvarResposta(r){
+    if (CFG.MODO_DEMO){ const arr=LS.get('resp',[]); arr.push(r); LS.set('resp',arr); return r; }
+    const { data } = await sb.from('clima_respostas').insert(r).select().single(); return data;
+  },
+  async listarRespostas(pesquisaId){
+    if (CFG.MODO_DEMO) return LS.get('resp',[]).filter(r=>r.pesquisa_id===pesquisaId);
+    const { data } = await sb.from('clima_respostas').select('*').eq('pesquisa_id',pesquisaId);
+    return data||[];
+  },
+};
+
+/* ====================================================================
+   BANCO DE PERGUNTAS (inspirado nos "10 pilares" do TeamCulture,
+   adaptado pra bar/restaurante). Cada uma é escala de carinha 1-5.
+   O gerador local monta a pesquisa a partir do contexto/foco escolhido.
+==================================================================== */
+const PILARES = [
+  { id:'lideranca',    nome:'Liderança',          emoji:'🧭', q:'Meu gerente/líder me trata com respeito e me dá apoio quando preciso.' },
+  { id:'reconhecimento',nome:'Reconhecimento',    emoji:'🏅', q:'Quando faço um bom trabalho, isso é reconhecido aqui.' },
+  { id:'ambiente',     nome:'Ambiente e colegas', emoji:'🤝', q:'Gosto de trabalhar com a minha equipe; o clima entre os colegas é bom.' },
+  { id:'escala',       nome:'Escala e carga',     emoji:'🗓️', q:'Minha escala e carga de trabalho são justas e organizadas.' },
+  { id:'remuneracao',  nome:'Remuneração',        emoji:'💰', q:'Sinto que sou pago(a) de forma justa pelo que entrego.' },
+  { id:'comunicacao',  nome:'Comunicação',        emoji:'📣', q:'As informações importantes chegam até mim de forma clara.' },
+  { id:'crescimento',  nome:'Crescimento',        emoji:'📈', q:'Vejo oportunidade de crescer e aprender trabalhando aqui.' },
+  { id:'orgulho',      nome:'Orgulho',            emoji:'❤️', q:'Tenho orgulho de trabalhar aqui e recomendo a casa pra um amigo.' },
+  { id:'condicoes',    nome:'Condições',          emoji:'🧰', q:'Tenho os equipamentos e condições que preciso pra fazer meu trabalho bem.' },
+  { id:'seguranca',    nome:'Segurança',          emoji:'🛡️', q:'Me sinto seguro(a) e tratado(a) com dignidade no meu dia a dia.' },
+];
+
+// Gera perguntas a partir do contexto. Tenta a IA (edge function); se não houver,
+// usa o banco local priorizando os focos escolhidos. SEMPRE retorna algo (demo-proof).
+async function gerarPerguntas(contexto, focos, qtd){
+  // 1) tenta IA real (fase 2)
+  if (CFG.EDGE_IA_URL){
+    try{
+      const res = await fetch(CFG.EDGE_IA_URL, { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ acao:'gerar_perguntas', contexto, focos, qtd }) });
+      if (res.ok){ const j = await res.json(); if (j.perguntas?.length) return j.perguntas; }
+    }catch(e){ console.warn('IA off, usando gerador local', e); }
+  }
+  // 2) gerador local
+  const ordenados = [...PILARES].sort((a,b)=>{
+    const fa = focos.includes(a.id)?0:1, fb = focos.includes(b.id)?0:1; return fa-fb;
+  });
+  const out = ordenados.slice(0, Math.max(1, qtd-2)).map(p=>({ tipo:'escala', pilar:p.id, texto:p.q }));
+  // sempre inclui eNPS + 1 pergunta aberta no final
+  out.push({ tipo:'enps', pilar:'enps', texto:'De 0 a 10, o quanto você recomendaria trabalhar aqui pra um amigo?' });
+  out.push({ tipo:'aberta', pilar:'aberta', texto:'Se você pudesse mudar UMA coisa aqui pra melhorar, o que seria?' });
+  return out.slice(0, qtd);
+}
+
+/* ====================================================================
+   ROUTER
+==================================================================== */
+function parseHash(){
+  const h = (location.hash||'#/').replace(/^#/,'');
+  const parts = h.split('/').filter(Boolean); // ['r','id','tok']
+  return parts;
+}
+async function render(){
+  const p = parseHash();
+  const root = document.getElementById('root');
+  root.className = 'min-h-screen';
+  if (p[0]==='criar') return viewCriar(root);
+  if (p[0]==='r')     return viewResponder(root, p[1], p[2]);
+  if (p[0]==='dash')  return viewDashboard(root, p[1]);
+  return viewHome(root);
+}
+window.addEventListener('hashchange', render);
+
+/* ====================================================================
+   HELPERS DE UI
+==================================================================== */
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.querySelector('div').textContent = msg;
+  t.classList.remove('hidden');
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.add('hidden'), 2200);
+}
+function topbar(titulo, voltar){
+  return `<header class="bg-gradient-to-r from-roxo-700 to-roxo-900 text-white">
+    <div class="max-w-5xl mx-auto px-5 py-4 flex items-center gap-3">
+      ${voltar?`<a href="${voltar}" class="w-9 h-9 grid place-items-center rounded-lg bg-white/15 hover:bg-white/25">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></a>`:`
+      <div class="w-9 h-9 grid place-items-center rounded-lg bg-white/15 font-extrabold">B</div>`}
+      <div class="leading-tight">
+        <div class="font-extrabold text-[15px]">Botequim<span class="font-light opacity-80">Clima</span></div>
+        <div class="text-[10px] opacity-60 uppercase tracking-wider">${titulo}</div>
+      </div>
+      ${CFG.MODO_DEMO?`<span class="ml-auto text-[10px] bg-aviso/90 text-white px-2 py-1 rounded-pill font-semibold">MODO DEMO</span>`:''}
+    </div>
+  </header>`;
+}
+const FACES = [
+  { v:1, e:'😡', t:'Péssimo',  c:'#E74C3C' },
+  { v:2, e:'🙁', t:'Ruim',     c:'#F39C12' },
+  { v:3, e:'😐', t:'Neutro',   c:'#F1C40F' },
+  { v:4, e:'🙂', t:'Bom',      c:'#52C41A' },
+  { v:5, e:'😍', t:'Ótimo',    c:'#2ECC71' },
+];
+
+/* ====================================================================
+   VIEW: HOME (admin)
+==================================================================== */
+async function viewHome(root){
+  const lista = await DB.listarPesquisas();
+  root.innerHTML = `
+  ${topbar('Painel do dono')}
+  <main class="max-w-5xl mx-auto px-5 py-7">
+    <div class="flex items-center justify-between mb-5">
+      <div>
+        <h1 class="text-xl font-extrabold">Pesquisas de clima</h1>
+        <p class="text-cinza-500 text-sm">Crie, mande o link no zap e acompanhe pelo celular.</p>
+      </div>
+      <a href="#/criar" class="bg-roxo-500 hover:bg-roxo-600 text-white font-semibold text-sm px-4 py-2.5 rounded-pill shadow-pop flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        Nova pesquisa
+      </a>
+    </div>
+    ${lista.length===0 ? `
+      <div class="bg-white rounded-card shadow-card p-10 text-center">
+        <div class="text-5xl mb-3">📊</div>
+        <p class="font-semibold">Nenhuma pesquisa ainda</p>
+        <p class="text-cinza-500 text-sm mb-5">Crie a primeira em menos de 2 minutos.</p>
+        <a href="#/criar" class="inline-block bg-roxo-500 text-white font-semibold text-sm px-5 py-2.5 rounded-pill">Criar primeira pesquisa</a>
+      </div>` :
+      `<div class="grid sm:grid-cols-2 gap-4">
+        ${lista.map(p=>cardPesquisa(p)).join('')}
+      </div>`}
+  </main>`;
+  // adesão por card
+  for (const p of lista){
+    const resp = await DB.listarRespostas(p.id);
+    const el = document.getElementById('ades-'+p.id);
+    if (el){ const tot=(p.funcionarios||[]).length||1; const pct=Math.round(resp.length/tot*100);
+      el.textContent = `${resp.length}/${(p.funcionarios||[]).length} responderam (${pct}%)`; }
+  }
+}
+function cardPesquisa(p){
+  const st = { rascunho:['Rascunho','#7F8C8D'], aberta:['Aberta','#2ECC71'], fechada:['Fechada','#5A6473'] }[p.status]||['—','#999'];
+  return `<div class="bg-white rounded-card shadow-card p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <div class="text-[11px] uppercase tracking-wide text-cinza-500">${p.empresa||'—'}</div>
+        <div class="font-bold text-[15px]">${p.titulo||'Pesquisa de clima'}</div>
+      </div>
+      <span class="text-[10px] font-bold px-2 py-1 rounded-pill" style="background:${st[1]}18;color:${st[1]}">${st[0]}</span>
+    </div>
+    <div id="ades-${p.id}" class="text-sm text-cinza-700 mt-3">—</div>
+    <div class="flex gap-2 mt-4">
+      <a href="#/dash/${p.id}" class="flex-1 text-center text-sm font-semibold bg-roxo-50 text-roxo-700 py-2 rounded-pill">Ver resultado</a>
+      <button onclick="copiarLink('${p.id}')" class="flex-1 text-sm font-semibold bg-cinza-100 text-cinza-700 py-2 rounded-pill">Copiar link</button>
+    </div>
+  </div>`;
+}
+function linkPublico(id, token){
+  const base = location.href.split('#')[0];
+  return base + '#/r/' + id + (token?('/'+token):'');
+}
+async function copiarLink(id){
+  const url = linkPublico(id);
+  try{ await navigator.clipboard.writeText(url); toast('Link copiado! Cola no grupo do zap 👍'); }
+  catch{ prompt('Copie o link:', url); }
+}
+
+/* ====================================================================
+   VIEW: CRIAR (wizard)
+==================================================================== */
+const novo = { id:null, empresa:'', titulo:'', contexto:{tipo:'',descobrir:'',obs:''}, focos:[], qtd:6, perguntas:[], funcionarios:[], anonima:false, status:'rascunho' };
+let W = null; // estado do wizard
+let etapa = 1;
+
+async function viewCriar(root){
+  if(!W) W = JSON.parse(JSON.stringify(novo)), W.id = uid();
+  root.innerHTML = `${topbar('Nova pesquisa','#/')}
+  <main class="max-w-2xl mx-auto px-5 py-6">
+    <div class="flex items-center gap-2 mb-6">
+      ${[1,2,3,4,5].map(n=>`<div class="flex-1 h-1.5 rounded-pill ${n<=etapa?'bg-roxo-500':'bg-cinza-200'}"></div>`).join('')}
+    </div>
+    <div id="wstep" class="fade"></div>
+  </main>`;
+  renderEtapa();
+}
+function renderEtapa(){
+  const c = document.getElementById('wstep');
+  if(etapa===1) c.innerHTML = etapaEmpresa();
+  if(etapa===2) c.innerHTML = etapaFuncionarios();
+  if(etapa===3) c.innerHTML = etapaContexto();
+  if(etapa===4) c.innerHTML = etapaPerguntas();
+  if(etapa===5) c.innerHTML = etapaPublicar();
+  c.classList.remove('fade'); void c.offsetWidth; c.classList.add('fade');
+  if(etapa===2) renderListaFunc();
+}
+function navWizard(back, next, nextLabel){
+  return `<div class="flex gap-3 mt-7">
+    ${back?`<button onclick="${back}" class="px-5 py-3 rounded-pill bg-cinza-100 text-cinza-700 font-semibold text-sm">Voltar</button>`:''}
+    <button onclick="${next}" class="flex-1 px-5 py-3 rounded-pill bg-roxo-500 hover:bg-roxo-600 text-white font-bold text-sm">${nextLabel}</button>
+  </div>`;
+}
+
+// --- Etapa 1: empresa/casa
+function etapaEmpresa(){
+  return `<h2 class="text-lg font-extrabold mb-1">Qual casa vamos pesquisar?</h2>
+  <p class="text-cinza-500 text-sm mb-5">Na reunião: o nome do bar/restaurante delas.</p>
+  <label class="block text-sm font-semibold mb-1">Nome da casa</label>
+  <input id="f-empresa" value="${W.empresa}" placeholder="Ex: Bar da Cida" class="w-full border border-cinza-200 rounded-card px-4 py-3 mb-4 focus:border-roxo-500 outline-none">
+  <label class="block text-sm font-semibold mb-1">Título da pesquisa</label>
+  <input id="f-titulo" value="${W.titulo||'Pesquisa de Clima'}" class="w-full border border-cinza-200 rounded-card px-4 py-3 focus:border-roxo-500 outline-none">
+  ${navWizard(null, 'salvarEmpresa()', 'Continuar →')}`;
+}
+function salvarEmpresa(){
+  W.empresa = document.getElementById('f-empresa').value.trim();
+  W.titulo  = document.getElementById('f-titulo').value.trim() || 'Pesquisa de Clima';
+  if(!W.empresa){ toast('Coloca o nome da casa 🙂'); return; }
+  etapa=2; renderEtapa();
+}
+
+// --- Etapa 2: funcionários (o "efeito guardanapo")
+function etapaFuncionarios(){
+  return `<h2 class="text-lg font-extrabold mb-1">Quem vai responder?</h2>
+  <p class="text-cinza-500 text-sm mb-4">Digite os nomes (1 por linha). Eles viram a lista clicável da pesquisa.
+  O telefone é opcional — preencha pra mandar um <b>link individual</b> pra cada um (trava pra ninguém responder pelo outro).</p>
+  <div class="bg-roxo-50 border border-roxo-100 rounded-card p-3 mb-4 text-[13px] text-roxo-800">
+    💡 <b>Na reunião:</b> pergunte "quantas funcionárias são?" e digite os nomes do guardanapo aqui na frente delas.
+  </div>
+  <div class="flex gap-2 mb-2">
+    <input id="f-nome" placeholder="Nome completo" class="flex-1 border border-cinza-200 rounded-card px-4 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){addFunc();}">
+    <input id="f-tel" placeholder="(opcional) telefone" class="w-40 border border-cinza-200 rounded-card px-3 py-2.5 focus:border-roxo-500 outline-none" onkeydown="if(event.key==='Enter'){addFunc();}">
+    <button onclick="addFunc()" class="bg-roxo-500 text-white font-bold px-4 rounded-card">+</button>
+  </div>
+  <textarea id="f-bulk" rows="2" placeholder="Ou cole vários nomes de uma vez (1 por linha) e clique em Adicionar lista" class="w-full border border-cinza-200 rounded-card px-4 py-2.5 text-sm mb-2 focus:border-roxo-500 outline-none"></textarea>
+  <button onclick="addBulk()" class="text-roxo-600 text-sm font-semibold mb-4">+ Adicionar lista colada</button>
+  <div id="lista-func"></div>
+  ${navWizard('etapaBack(1)', 'salvarFunc()', 'Continuar →')}`;
+}
+function renderListaFunc(){
+  const el = document.getElementById('lista-func'); if(!el) return;
+  if(W.funcionarios.length===0){ el.innerHTML = `<div class="text-cinza-500 text-sm py-3 text-center border border-dashed border-cinza-200 rounded-card">Nenhum nome ainda</div>`; return; }
+  el.innerHTML = `<div class="text-xs text-cinza-500 mb-2">${W.funcionarios.length} pessoa(s)</div>
+  <div class="space-y-2">${W.funcionarios.map(f=>`
+    <div class="flex items-center gap-2 bg-white border border-cinza-200 rounded-card px-3 py-2">
+      <div class="w-8 h-8 rounded-pill bg-roxo-100 text-roxo-700 grid place-items-center font-bold text-sm">${(f.nome[0]||'?').toUpperCase()}</div>
+      <div class="flex-1"><div class="font-semibold text-sm">${f.nome}</div>
+        ${f.telefone?`<div class="text-[11px] text-cinza-500">${f.telefone} · link individual</div>`:`<div class="text-[11px] text-cinza-400">sem telefone · usa link geral</div>`}</div>
+      <button onclick="rmFunc('${f.id}')" class="text-cinza-400 hover:text-alerta">✕</button>
+    </div>`).join('')}</div>`;
+}
+function addFunc(){
+  const n = document.getElementById('f-nome'), t = document.getElementById('f-tel');
+  const nome = n.value.trim(); if(!nome) return;
+  W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:t.value.trim(), token:tok() });
+  n.value=''; t.value=''; n.focus(); renderListaFunc();
+}
+function addBulk(){
+  const ta = document.getElementById('f-bulk');
+  ta.value.split('\n').map(s=>s.trim()).filter(Boolean).forEach(nome=>{
+    W.funcionarios.push({ id:uid(), empresa:W.empresa, nome, telefone:'', token:tok() });
+  });
+  ta.value=''; renderListaFunc();
+}
+function rmFunc(id){ W.funcionarios = W.funcionarios.filter(f=>f.id!==id); renderListaFunc(); }
+function salvarFunc(){ if(W.funcionarios.length===0){ toast('Adicione pelo menos 1 pessoa'); return; } etapa=3; renderEtapa(); }
+function etapaBack(n){ etapa=n; renderEtapa(); }
+
+// --- Etapa 3: contexto pra IA
+function etapaContexto(){
+  return `<h2 class="text-lg font-extrabold mb-1">Conte pra IA sobre a casa</h2>
+  <p class="text-cinza-500 text-sm mb-5">Quanto melhor o contexto, melhores as perguntas. (É o "papo no zap" automatizado.)</p>
+  <label class="block text-sm font-semibold mb-1">Que tipo de operação é?</label>
+  <input id="c-tipo" value="${W.contexto.tipo}" placeholder="Ex: bar de petiscos, 2 turnos, salão + cozinha" class="w-full border border-cinza-200 rounded-card px-4 py-3 mb-4 focus:border-roxo-500 outline-none">
+  <label class="block text-sm font-semibold mb-1">O que você mais quer descobrir?</label>
+  <input id="c-descobrir" value="${W.contexto.descobrir}" placeholder="Ex: por que tá saindo muita gente / clima entre garçom e cozinha" class="w-full border border-cinza-200 rounded-card px-4 py-3 mb-4 focus:border-roxo-500 outline-none">
+  <label class="block text-sm font-semibold mb-2">Quais temas focar?</label>
+  <div class="flex flex-wrap gap-2 mb-2">
+    ${PILARES.map(p=>`<button onclick="toggleFoco('${p.id}',this)" class="chip border border-cinza-200 rounded-pill px-3 py-1.5 text-sm ${W.focos.includes(p.id)?'bg-roxo-500 text-white border-roxo-500':'bg-white'}">${p.emoji} ${p.nome}</button>`).join('')}
+  </div>
+  <p class="text-[11px] text-cinza-400 mb-2">Não escolheu? Sem problema — a IA cobre os principais sozinha.</p>
+  ${navWizard('etapaBack(2)', 'salvarContexto()', 'Gerar perguntas →')}`;
+}
+function toggleFoco(id, btn){
+  if(W.focos.includes(id)){ W.focos = W.focos.filter(f=>f!==id); btn.className='chip border border-cinza-200 rounded-pill px-3 py-1.5 text-sm bg-white'; }
+  else { W.focos.push(id); btn.className='chip border border-roxo-500 rounded-pill px-3 py-1.5 text-sm bg-roxo-500 text-white'; }
+}
+async function salvarContexto(){
+  W.contexto.tipo = document.getElementById('c-tipo').value.trim();
+  W.contexto.descobrir = document.getElementById('c-descobrir').value.trim();
+  etapa=4; renderEtapa();
+}
+
+// --- Etapa 4: cards clicáveis (quantas perguntas) + preview gerado
+function etapaPerguntas(){
+  const opts = [4,6,8,10];
+  return `<h2 class="text-lg font-extrabold mb-1">Quantas perguntas?</h2>
+  <p class="text-cinza-500 text-sm mb-4">Curtinha responde mais gente. eNPS + 1 pergunta aberta entram sempre.</p>
+  <div class="grid grid-cols-4 gap-3 mb-5">
+    ${opts.map(o=>`<button onclick="setQtd(${o})" class="card-q border-2 border-cinza-200 rounded-card py-4 text-center ${W.qtd===o?'sel':''}" data-qtd="${o}">
+      <div class="text-2xl font-extrabold">${o}</div><div class="text-[11px] text-cinza-500">perguntas</div></button>`).join('')}
+  </div>
+  <div class="flex items-center justify-between mb-2">
+    <span class="text-sm font-semibold">Pré-visualização das perguntas</span>
+    <button onclick="regerar()" class="text-roxo-600 text-sm font-semibold">↻ Gerar de novo</button>
+  </div>
+  <div id="preview-q" class="space-y-2 mb-2"><div class="text-cinza-500 text-sm py-3">Gerando…</div></div>
+  ${navWizard('etapaBack(3)', 'irPublicar()', 'Continuar →')}`;
+}
+async function setQtd(q){ W.qtd=q; document.querySelectorAll('[data-qtd]').forEach(b=>b.classList.toggle('sel', +b.dataset.qtd===q)); await regerar(); }
+async function regerar(){
+  const box = document.getElementById('preview-q'); if(box) box.innerHTML = '<div class="text-cinza-500 text-sm py-3">Gerando perguntas com base no contexto…</div>';
+  W.perguntas = await gerarPerguntas(W.contexto, W.focos, W.qtd);
+  if(box) box.innerHTML = W.perguntas.map((q,i)=>{
+    const tag = q.tipo==='enps'?'eNPS (0-10)': q.tipo==='aberta'?'Resposta aberta':'Carinhas (1-5)';
+    return `<div class="bg-white border border-cinza-200 rounded-card px-4 py-3 flex gap-3">
+      <div class="w-6 h-6 shrink-0 rounded-pill bg-roxo-100 text-roxo-700 grid place-items-center text-xs font-bold">${i+1}</div>
+      <div><div class="text-sm">${q.texto}</div><div class="text-[10px] uppercase tracking-wide text-cinza-400 mt-0.5">${tag}</div></div>
+    </div>`;
+  }).join('');
+}
+function irPublicar(){ if(!W.perguntas.length){ toast('Gere as perguntas primeiro'); return; } etapa=5; renderEtapa(); }
+
+// --- Etapa 5: anonimato + publicar
+function etapaPublicar(){
+  return `<h2 class="text-lg font-extrabold mb-1">Quase lá!</h2>
+  <p class="text-cinza-500 text-sm mb-4">Últimos ajustes e a pesquisa fica pronta pra mandar no zap.</p>
+  <label class="flex items-center gap-3 bg-white border border-cinza-200 rounded-card px-4 py-3 mb-3 cursor-pointer">
+    <input type="checkbox" id="c-anon" ${W.anonima?'checked':''} class="w-5 h-5 accent-roxo-500">
+    <div><div class="font-semibold text-sm">Pesquisa anônima</div>
+      <div class="text-[12px] text-cinza-500">Liga isso pra resposta mais sincera. O resultado aparece só somado, sem nome.</div></div>
+  </label>
+  <div class="bg-cinza-50 border border-cinza-200 rounded-card p-4 text-sm mb-2">
+    <div class="flex justify-between py-1"><span class="text-cinza-500">Casa</span><b>${W.empresa}</b></div>
+    <div class="flex justify-between py-1"><span class="text-cinza-500">Pessoas</span><b>${W.funcionarios.length}</b></div>
+    <div class="flex justify-between py-1"><span class="text-cinza-500">Perguntas</span><b>${W.perguntas.length}</b></div>
+    <div class="flex justify-between py-1"><span class="text-cinza-500">Links individuais</span><b>${W.funcionarios.filter(f=>f.telefone).length} c/ telefone</b></div>
+  </div>
+  ${navWizard('etapaBack(4)', 'publicar()', '✅ Publicar e gerar link')}`;
+}
+async function publicar(){
+  W.anonima = document.getElementById('c-anon').checked;
+  W.status = 'aberta';
+  await DB.salvarFuncionarios(W.funcionarios);
+  await DB.salvarPesquisa({ id:W.id, empresa:W.empresa, titulo:W.titulo, contexto:W.contexto,
+    focos:W.focos, perguntas:W.perguntas, funcionarios:W.funcionarios, anonima:W.anonima,
+    status:'aberta', criado_em: Date.now ? Date.now() : 0 });
+  const id = W.id; W=null; etapa=1;
+  location.hash = '#/dash/'+id;
+  setTimeout(()=>toast('Pesquisa criada! 🎉'),300);
+}
+
+/* ====================================================================
+   VIEW: RESPONDER (o link que vai no zap)
+==================================================================== */
+let R = { pesquisa:null, func:null, idx:0, respostas:{}, concordou:false };
+async function viewResponder(root, id, token){
+  const p = await DB.getPesquisa(id);
+  if(!p){ root.innerHTML = telaErro('Pesquisa não encontrada'); return; }
+  R = { pesquisa:p, func:null, idx:0, respostas:{}, concordou:false };
+  // link individual? trava no funcionário do token
+  if(token){ R.func = (p.funcionarios||[]).find(f=>f.token===token) || null; }
+  root.innerHTML = `<div class="max-w-md mx-auto min-h-screen flex flex-col">
+    ${topbarPublico(p)}
+    <div id="rbody" class="flex-1 px-5 py-6"></div>
+  </div>`;
+  if(p.status!=='aberta'){ document.getElementById('rbody').innerHTML = telaInfo('Esta pesquisa está fechada.','✅'); return; }
+  // já respondeu?
+  if(R.func && await DB.jaRespondeu(p.id, R.func.id)){
+    document.getElementById('rbody').innerHTML = telaInfo('Você já respondeu esta pesquisa. Obrigado! 💜','🙌'); return;
+  }
+  if(R.func) renderConsent(); else renderEscolherNome();
+}
+function topbarPublico(p){
+  return `<header class="bg-gradient-to-r from-roxo-700 to-roxo-900 text-white px-5 py-5 text-center">
+    <div class="text-[11px] uppercase tracking-wider opacity-70">${p.empresa}</div>
+    <div class="font-extrabold text-lg">${p.titulo}</div>
+  </header>`;
+}
+function renderEscolherNome(){
+  const p = R.pesquisa;
+  document.getElementById('rbody').innerHTML = `
+    <h2 class="text-center font-bold text-lg mb-1">Quem é você?</h2>
+    <p class="text-center text-cinza-500 text-sm mb-5">Toque no seu nome pra começar.</p>
+    <div class="space-y-2">
+      ${(p.funcionarios||[]).map(f=>`<button onclick="escolherNome('${f.id}')" class="w-full text-left bg-white border border-cinza-200 rounded-card px-4 py-3 flex items-center gap-3 hover:border-roxo-500">
+        <div class="w-9 h-9 rounded-pill bg-roxo-100 text-roxo-700 grid place-items-center font-bold">${(f.nome[0]||'?').toUpperCase()}</div>
+        <span class="font-semibold">${f.nome}</span></button>`).join('')}
+    </div>`;
+}
+async function escolherNome(fid){
+  R.func = (R.pesquisa.funcionarios||[]).find(f=>f.id===fid);
+  if(await DB.jaRespondeu(R.pesquisa.id, R.func.id)){
+    document.getElementById('rbody').innerHTML = telaInfo('Esse nome já respondeu. Obrigado! 💜','🙌'); return;
+  }
+  renderConsent();
+}
+function renderConsent(){
+  const anon = R.pesquisa.anonima;
+  document.getElementById('rbody').innerHTML = `
+    <div class="text-center mb-6">
+      <div class="text-4xl mb-2">👋</div>
+      <div class="font-bold text-lg">Oi, ${R.func.nome.split(' ')[0]}!</div>
+      <p class="text-cinza-500 text-sm mt-1">São ${R.pesquisa.perguntas.length} perguntas rápidas. Leva uns 2 minutinhos.</p>
+    </div>
+    <div class="bg-${anon?'sucesso':'roxo-50'} ${anon?'text-white':'text-roxo-800'} rounded-card px-4 py-3 text-sm mb-5">
+      ${anon?'🔒 <b>Pesquisa anônima.</b> Sua resposta vai somada com a dos outros — ninguém vê o que você respondeu individualmente.'
+            :'🙂 Sua resposta ajuda a melhorar o dia a dia aqui. Pode ser sincero.'}
+    </div>
+    <label class="flex items-start gap-3 mb-5 cursor-pointer">
+      <input type="checkbox" id="r-consent" class="w-5 h-5 mt-0.5 accent-roxo-500">
+      <span class="text-sm text-cinza-700">Concordo em participar desta pesquisa e que minhas respostas sejam usadas pra melhorar o ambiente de trabalho.</span>
+    </label>
+    <button onclick="iniciarResposta()" class="w-full bg-roxo-500 hover:bg-roxo-600 text-white font-bold py-3.5 rounded-pill">Começar</button>`;
+}
+function iniciarResposta(){
+  if(!document.getElementById('r-consent').checked){ toast('Marque o "concordo" pra continuar 🙂'); return; }
+  R.concordou = true; R.idx = 0; renderPergunta();
+}
+function renderPergunta(){
+  const q = R.pesquisa.perguntas[R.idx];
+  const total = R.pesquisa.perguntas.length;
+  const body = document.getElementById('rbody');
+  let input = '';
+  if(q.tipo==='escala'){
+    input = `<div class="flex justify-between gap-1 mt-6">
+      ${FACES.map(f=>`<button onclick="responder(${f.v})" class="face-btn flex-1 flex flex-col items-center gap-1 py-3 rounded-card ${R.respostas[R.idx]===f.v?'face-sel':''}" style="background:${R.respostas[R.idx]===f.v?f.c+'22':'transparent'}">
+        <span class="text-3xl">${f.e}</span><span class="text-[10px] text-cinza-500">${f.t}</span></button>`).join('')}
+    </div>`;
+  } else if(q.tipo==='enps'){
+    input = `<div class="grid grid-cols-6 gap-2 mt-6">
+      ${Array.from({length:11},(_,n)=>`<button onclick="responder(${n})" class="py-2.5 rounded-card border font-bold ${R.respostas[R.idx]===n?'bg-roxo-500 text-white border-roxo-500':'border-cinza-200 bg-white'}">${n}</button>`).join('')}
+    </div>
+    <div class="flex justify-between text-[11px] text-cinza-400 mt-2"><span>0 — não recomendo</span><span>10 — recomendo muito</span></div>`;
+  } else {
+    input = `<textarea id="r-aberta" rows="4" placeholder="Escreva aqui (opcional)…" class="w-full border border-cinza-200 rounded-card px-4 py-3 mt-5 focus:border-roxo-500 outline-none">${R.respostas[R.idx]||''}</textarea>
+      <button onclick="responder(document.getElementById('r-aberta').value)" class="w-full bg-roxo-500 text-white font-bold py-3.5 rounded-pill mt-4">${R.idx+1<total?'Próxima':'Enviar respostas'}</button>`;
+  }
+  body.innerHTML = `
+    <div class="flex items-center justify-between mb-4">
+      <span class="text-xs text-cinza-500">Pergunta ${R.idx+1} de ${total}</span>
+      <div class="flex-1 mx-3 h-1.5 bg-cinza-200 rounded-pill overflow-hidden"><div class="h-full bg-roxo-500" style="width:${(R.idx)/total*100}%"></div></div>
+    </div>
+    <div class="fade"><h2 class="font-bold text-lg leading-snug">${q.texto}</h2>${input}</div>`;
+}
+async function responder(val){
+  R.respostas[R.idx] = val;
+  const total = R.pesquisa.perguntas.length;
+  if(R.idx+1 < total){ R.idx++; renderPergunta(); return; }
+  // fim — monta e salva
+  const itens = R.pesquisa.perguntas.map((q,i)=>({ pilar:q.pilar, tipo:q.tipo, valor:R.respostas[i] ?? null }));
+  await DB.salvarResposta({
+    id: uid(), pesquisa_id: R.pesquisa.id,
+    func_id: R.pesquisa.anonima ? null : (R.func?.id||null),
+    func_nome: R.pesquisa.anonima ? null : (R.func?.nome||null),
+    itens, criado_em: Date.now ? Date.now() : 0,
+  });
+  document.getElementById('rbody').innerHTML = telaInfo('Prontinho! Obrigado por responder 💜<br>Sua opinião faz diferença.','🎉');
+}
+function telaInfo(msg, emoji){ return `<div class="text-center py-16"><div class="text-5xl mb-4">${emoji}</div><p class="text-cinza-700 font-medium">${msg}</p></div>`; }
+function telaErro(msg){ return `<div class="max-w-md mx-auto py-20 text-center"><div class="text-5xl mb-3">😕</div><p class="font-semibold">${msg}</p><a href="#/" class="text-roxo-600 text-sm font-semibold">Voltar</a></div>`; }
+
+/* ====================================================================
+   VIEW: DASHBOARD (celular)
+==================================================================== */
+async function viewDashboard(root, id){
+  const p = await DB.getPesquisa(id);
+  if(!p){ root.innerHTML = telaErro('Pesquisa não encontrada'); return; }
+  const resp = await DB.listarRespostas(id);
+  const m = metricas(p, resp);
+  root.innerHTML = `${topbar('Resultado','#/')}
+  <main class="max-w-md mx-auto px-4 py-5 space-y-4">
+    <div class="text-center">
+      <div class="text-[11px] uppercase tracking-wide text-cinza-500">${p.empresa}</div>
+      <div class="font-extrabold text-lg">${p.titulo}</div>
+    </div>
+
+    <!-- Adesão -->
+    <div class="bg-white rounded-card shadow-card p-4">
+      <div class="flex items-center justify-between">
+        <div><div class="text-sm text-cinza-500">Responderam</div>
+          <div class="text-2xl font-extrabold">${resp.length}<span class="text-cinza-400 text-base">/${(p.funcionarios||[]).length||'?'}</span></div></div>
+        <div class="text-right"><div class="text-sm text-cinza-500">Adesão</div>
+          <div class="text-2xl font-extrabold text-roxo-600">${m.adesao}%</div></div>
+      </div>
+      <div class="h-2 bg-cinza-100 rounded-pill overflow-hidden mt-3"><div class="h-full bg-roxo-500" style="width:${m.adesao}%"></div></div>
+    </div>
+
+    <!-- eNPS + Clima geral -->
+    <div class="grid grid-cols-2 gap-3">
+      <div class="bg-white rounded-card shadow-card p-4 text-center">
+        <div class="text-sm text-cinza-500">eNPS</div>
+        <div class="text-3xl font-extrabold" style="color:${m.enpsCor}">${m.enps??'—'}</div>
+        <div class="text-[11px] text-cinza-400">${m.enpsLabel}</div>
+      </div>
+      <div class="bg-white rounded-card shadow-card p-4 text-center">
+        <div class="text-sm text-cinza-500">Clima geral</div>
+        <div class="text-3xl font-extrabold">${m.climaEmoji}</div>
+        <div class="text-[11px] text-cinza-400">${m.climaMedia? m.climaMedia.toFixed(1)+'/5':'—'}</div>
+      </div>
+    </div>
+
+    <!-- IA: resumo + ação -->
+    <div class="rounded-card p-4 text-white" style="background:linear-gradient(135deg,#7F00FF,#FF007F)">
+      <div class="flex items-center gap-2 text-sm font-bold mb-1">✨ Leitura da IA</div>
+      <div id="ia-box" class="text-sm leading-relaxed opacity-95">${resp.length? 'Analisando…' : 'Aguardando as primeiras respostas pra analisar.'}</div>
+    </div>
+
+    <!-- Pilares -->
+    <div class="bg-white rounded-card shadow-card p-4">
+      <div class="text-sm font-bold mb-3">Por tema</div>
+      ${m.pilares.length? m.pilares.map(pl=>`
+        <div class="flex items-center gap-3 mb-2.5">
+          <div class="w-28 text-[13px]">${pl.emoji} ${pl.nome}</div>
+          <div class="flex-1 h-2.5 bg-cinza-100 rounded-pill overflow-hidden"><div class="h-full rounded-pill" style="width:${pl.media/5*100}%;background:${pl.cor}"></div></div>
+          <div class="w-8 text-right text-[13px] font-bold">${pl.media.toFixed(1)}</div>
+        </div>`).join('') : '<div class="text-cinza-400 text-sm">Sem respostas de escala ainda.</div>'}
+    </div>
+
+    <!-- Comentários abertos -->
+    ${m.comentarios.length?`<div class="bg-white rounded-card shadow-card p-4">
+      <div class="text-sm font-bold mb-2">💬 O que pediram pra mudar</div>
+      <div class="space-y-2">${m.comentarios.map(c=>`<div class="text-sm bg-cinza-50 rounded-card px-3 py-2 border border-cinza-100">"${c}"</div>`).join('')}</div>
+    </div>`:''}
+
+    <div class="flex gap-2">
+      <button onclick="copiarLink('${p.id}')" class="flex-1 text-sm font-semibold bg-roxo-50 text-roxo-700 py-2.5 rounded-pill">Copiar link da pesquisa</button>
+      <button onclick="render()" class="flex-1 text-sm font-semibold bg-cinza-100 text-cinza-700 py-2.5 rounded-pill">↻ Atualizar</button>
+    </div>
+  </main>`;
+  // IA assíncrona
+  if(resp.length) montarLeituraIA(p, m);
+}
+function metricas(p, resp){
+  const total = (p.funcionarios||[]).length||0;
+  const adesao = total? Math.round(resp.length/total*100) : (resp.length?100:0);
+  // escala por pilar
+  const byPilar = {};
+  let enpsVals = [], comentarios = [];
+  resp.forEach(r=>(r.itens||[]).forEach(it=>{
+    if(it.tipo==='escala' && typeof it.valor==='number'){ (byPilar[it.pilar] ??= []).push(it.valor); }
+    if(it.tipo==='enps' && typeof it.valor==='number'){ enpsVals.push(it.valor); }
+    if(it.tipo==='aberta' && it.valor && String(it.valor).trim()){ comentarios.push(String(it.valor).trim()); }
+  }));
+  const pilares = Object.entries(byPilar).map(([id,vals])=>{
+    const meta = PILARES.find(x=>x.id===id)||{nome:id,emoji:'•'};
+    const media = vals.reduce((a,b)=>a+b,0)/vals.length;
+    const cor = media>=4?'#2ECC71':media>=3?'#F39C12':'#E74C3C';
+    return { id, nome:meta.nome, emoji:meta.emoji, media, cor };
+  }).sort((a,b)=>a.media-b.media);
+  // eNPS = %promotores(9-10) - %detratores(0-6)
+  let enps=null, enpsLabel='—', enpsCor='#7F8C8D';
+  if(enpsVals.length){
+    const prom = enpsVals.filter(v=>v>=9).length, det = enpsVals.filter(v=>v<=6).length;
+    enps = Math.round((prom-det)/enpsVals.length*100);
+    enpsLabel = enps>=50?'Excelente': enps>=0?'Bom': enps>=-50?'Ruim':'Crítico';
+    enpsCor = enps>=50?'#2ECC71': enps>=0?'#52C41A': enps>=-50?'#F39C12':'#E74C3C';
+  }
+  const todasEscalas = Object.values(byPilar).flat();
+  const climaMedia = todasEscalas.length? todasEscalas.reduce((a,b)=>a+b,0)/todasEscalas.length : null;
+  const climaEmoji = climaMedia? (FACES.find(f=>f.v===Math.round(climaMedia))||FACES[2]).e : '—';
+  return { adesao, pilares, enps, enpsLabel, enpsCor, climaMedia, climaEmoji, comentarios };
+}
+async function montarLeituraIA(p, m){
+  const box = document.getElementById('ia-box'); if(!box) return;
+  // tenta IA real
+  if(CFG.EDGE_IA_URL){
+    try{
+      const res = await fetch(CFG.EDGE_IA_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({acao:'resumir', empresa:p.empresa, metricas:m})});
+      if(res.ok){ const j=await res.json(); if(j.texto){ box.innerHTML=j.texto; return; } }
+    }catch(e){ /* cai pro local */ }
+  }
+  // leitura local (regras simples mas úteis)
+  box.innerHTML = leituraLocal(m);
+}
+function leituraLocal(m){
+  const partes = [];
+  if(m.enps!=null) partes.push(`eNPS <b>${m.enps}</b> (${m.enpsLabel.toLowerCase()}).`);
+  if(m.pilares.length){
+    const pior = m.pilares[0], melhor = m.pilares[m.pilares.length-1];
+    partes.push(`Ponto mais fraco: <b>${pior.nome}</b> (${pior.media.toFixed(1)}/5). Mais forte: <b>${melhor.nome}</b>.`);
+    // ação sugerida pelo pior pilar
+    const acoes = {
+      lideranca:'converse 1:1 com a liderança dessa equipe nesta semana.',
+      reconhecimento:'crie um "destaque da semana" simples pra reconhecer quem se esforça.',
+      ambiente:'promova um momento de equipe (um café/lanche juntos) e ouça os atritos.',
+      escala:'revise a escala — provavelmente tem gente sobrecarregada em dias específicos.',
+      remuneracao:'avalie a política de gorjeta/extra; comunique claramente como funciona.',
+      comunicacao:'crie um mural ou grupo só de avisos importantes pra todos verem.',
+      crescimento:'mostre um caminho de crescimento (ex: auxiliar → garçom → líder).',
+      condicoes:'liste com a equipe o que está faltando de equipamento/insumo e resolva o top 3.',
+      seguranca:'reforce regras de respeito e um canal seguro pra reclamar sem medo.',
+    };
+    if(acoes[pior.id]) partes.push(`👉 <b>Ação sugerida:</b> ${acoes[pior.id]}`);
+  }
+  if(m.comentarios.length) partes.push(`${m.comentarios.length} pessoa(s) deixaram comentário aberto — vale ler abaixo.`);
+  return partes.join(' ') || 'Poucas respostas pra uma leitura confiável. Aguarde mais gente responder.';
+}
+
+/* ====================================================================
+   BOOT
+==================================================================== */
+render();
+</script>
+</body>
+</html>
