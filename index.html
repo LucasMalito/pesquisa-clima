@@ -609,35 +609,47 @@ function renderPergunta(){
   const total = R.pesquisa.perguntas.length;
   const body = document.getElementById('rbody');
   // caixinha opcional pra escrever mais (alimenta a análise da IA)
-  const cbox = `<textarea id="r-coment" rows="2" placeholder="✍️ Quer escrever um pouco mais? (opcional) — depois toque na resposta" class="w-full border border-cinza-200 rounded-card px-3 py-2 text-sm mt-4 focus:border-roxo-500 outline-none">${R.comentarios[R.idx]||''}</textarea>`;
+  const cbox = `<textarea id="r-coment" rows="2" placeholder="✍️ Quer escrever um pouco mais? (opcional)" class="w-full border border-cinza-200 rounded-card px-3 py-2 text-sm mt-4 focus:border-roxo-500 outline-none">${R.comentarios[R.idx]||''}</textarea>`;
   let input = '';
   if(q.tipo==='escala'){
     input = `<div class="flex justify-between gap-1 mt-6">
-      ${FACES.map(f=>`<button onclick="responder(${f.v})" class="face-btn flex-1 flex flex-col items-center gap-1 py-3 rounded-card ${R.respostas[R.idx]===f.v?'face-sel':''}" style="background:${R.respostas[R.idx]===f.v?f.c+'22':'transparent'}">
+      ${FACES.map(f=>`<button onclick="selecionar(${f.v})" class="face-btn flex-1 flex flex-col items-center gap-1 py-3 rounded-card ${R.respostas[R.idx]===f.v?'face-sel':''}" style="background:${R.respostas[R.idx]===f.v?f.c+'22':'transparent'}">
         <span class="text-3xl">${f.e}</span><span class="text-[10px] text-cinza-500">${f.t}</span></button>`).join('')}
     </div>${cbox}`;
   } else if(q.tipo==='enps'){
     input = `<div class="grid grid-cols-6 gap-2 mt-6">
-      ${Array.from({length:11},(_,n)=>`<button onclick="responder(${n})" class="py-2.5 rounded-card border font-bold ${R.respostas[R.idx]===n?'bg-roxo-500 text-white border-roxo-500':'border-cinza-200 bg-white'}">${n}</button>`).join('')}
+      ${Array.from({length:11},(_,n)=>`<button onclick="selecionar(${n})" class="py-2.5 rounded-card border font-bold ${R.respostas[R.idx]===n?'bg-roxo-500 text-white border-roxo-500':'border-cinza-200 bg-white'}">${n}</button>`).join('')}
     </div>
     <div class="flex justify-between text-[11px] text-cinza-400 mt-2"><span>0 — não recomendo</span><span>10 — recomendo muito</span></div>${cbox}`;
   } else {
-    input = `<textarea id="r-aberta" rows="4" placeholder="Escreva aqui (opcional)…" class="w-full border border-cinza-200 rounded-card px-4 py-3 mt-5 focus:border-roxo-500 outline-none">${R.respostas[R.idx]||''}</textarea>
-      <button onclick="responder(document.getElementById('r-aberta').value)" class="w-full bg-roxo-500 text-white font-bold py-3.5 rounded-pill mt-4">${R.idx+1<total?'Próxima':'Enviar respostas'}</button>`;
+    input = `<textarea id="r-aberta" rows="4" placeholder="Escreva aqui (opcional)…" class="w-full border border-cinza-200 rounded-card px-4 py-3 mt-5 focus:border-roxo-500 outline-none">${R.respostas[R.idx]||''}</textarea>`;
   }
+  const isLast = R.idx+1 >= total;
+  const nav = `<div class="flex gap-2 mt-6">
+    ${R.idx>0 ? `<button onclick="voltarPergunta()" class="px-5 py-3.5 rounded-pill bg-cinza-100 text-cinza-700 font-semibold text-sm">← Voltar</button>` : ''}
+    <button onclick="avancarPergunta()" class="flex-1 px-5 py-3.5 rounded-pill bg-roxo-500 hover:bg-roxo-600 text-white font-bold text-sm">${isLast?'Enviar respostas ✅':'Próximo →'}</button>
+  </div>`;
   body.innerHTML = `
     <div class="flex items-center justify-between mb-4">
-      <span class="text-xs text-cinza-500">Pergunta ${R.idx+1} de ${total}</span>
+      <span class="text-xs text-cinza-500 whitespace-nowrap">Pergunta ${R.idx+1} de ${total}</span>
       <div class="flex-1 mx-3 h-1.5 bg-cinza-200 rounded-pill overflow-hidden"><div class="h-full bg-roxo-500" style="width:${(R.idx)/total*100}%"></div></div>
     </div>
-    <div class="fade"><h2 class="font-bold text-lg leading-snug">${q.texto}</h2>${input}</div>`;
+    <div class="fade"><h2 class="font-bold text-lg leading-snug">${q.texto}</h2>${input}${nav}</div>`;
 }
-async function responder(val){
-  const cm = document.getElementById('r-coment');
-  if(cm) R.comentarios[R.idx] = cm.value.trim();
-  R.respostas[R.idx] = val;
-  const total = R.pesquisa.perguntas.length;
-  if(R.idx+1 < total){ R.idx++; renderPergunta(); return; }
+// guarda o que foi digitado no comentário (e na pergunta aberta) antes de re-renderizar
+function capturarPergunta(){
+  const cm = document.getElementById('r-coment'); if(cm) R.comentarios[R.idx] = cm.value.trim();
+  const ab = document.getElementById('r-aberta'); if(ab) R.respostas[R.idx] = ab.value.trim();
+}
+function selecionar(val){ capturarPergunta(); R.respostas[R.idx] = val; renderPergunta(); }
+function voltarPergunta(){ capturarPergunta(); if(R.idx>0){ R.idx--; renderPergunta(); } else { renderConsent(); } }
+async function avancarPergunta(){
+  capturarPergunta();
+  const q = R.pesquisa.perguntas[R.idx];
+  if(q.tipo!=='aberta' && (R.respostas[R.idx]===undefined || R.respostas[R.idx]===null)){
+    toast('Escolha uma resposta pra continuar 🙂'); return;
+  }
+  if(R.idx+1 < R.pesquisa.perguntas.length){ R.idx++; renderPergunta(); return; }
   // fim — monta e salva
   const itens = R.pesquisa.perguntas.map((q,i)=>({ pilar:q.pilar, tipo:q.tipo, valor:R.respostas[i] ?? null, comentario:R.comentarios[i]||null }));
   await DB.salvarResposta({
