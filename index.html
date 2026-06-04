@@ -162,15 +162,16 @@ const PILARES = [
 // Gera perguntas a partir do contexto. Tenta a IA (edge function); se não houver,
 // usa o banco local priorizando os focos escolhidos. SEMPRE retorna algo (demo-proof).
 async function gerarPerguntas(contexto, focos, qtd){
-  // 1) tenta IA real (fase 2)
+  // 1) IA real (Claude) usando o contexto
   if (CFG.EDGE_IA_URL){
     try{
       const res = await fetch(CFG.EDGE_IA_URL, { method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ acao:'gerar_perguntas', contexto, focos, qtd }) });
-      if (res.ok){ const j = await res.json(); if (j.perguntas?.length) return j.perguntas; }
-    }catch(e){ console.warn('IA off, usando gerador local', e); }
+      if (res.ok){ const j = await res.json(); if (j.perguntas?.length){ return j.perguntas; } }
+      throw new Error('sem perguntas da IA');
+    }catch(e){ console.warn('IA off, usando gerador local', e); toast('IA indisponível agora — usei perguntas-base (clique ↻ pra tentar de novo)'); }
   }
-  // 2) gerador local
+  // 2) gerador local (fallback)
   const ordenados = [...PILARES].sort((a,b)=>{
     const fa = focos.includes(a.id)?0:1, fb = focos.includes(b.id)?0:1; return fa-fb;
   });
@@ -322,6 +323,7 @@ function renderEtapa(){
   if(etapa===5) c.innerHTML = etapaPublicar();
   c.classList.remove('fade'); void c.offsetWidth; c.classList.add('fade');
   if(etapa===2) renderListaFunc();
+  if(etapa===4) regerar(); // gera as perguntas com IA automático ao abrir
 }
 function navWizard(back, next, nextLabel){
   return `<div class="flex gap-3 mt-7">
@@ -475,10 +477,10 @@ function etapaPerguntas(){
       <div class="text-2xl font-extrabold">${o}</div><div class="text-[11px] text-cinza-500">perguntas</div></button>`).join('')}
   </div>
   <div class="flex items-center justify-between mb-2">
-    <span class="text-sm font-semibold">Pré-visualização das perguntas</span>
+    <span class="text-sm font-semibold">✨ Perguntas criadas pela IA <span class="font-normal text-cinza-400">(com base no seu contexto)</span></span>
     <button onclick="regerar()" class="text-roxo-600 text-sm font-semibold">↻ Gerar de novo</button>
   </div>
-  <div id="preview-q" class="space-y-2 mb-2"><div class="text-cinza-500 text-sm py-3">Gerando…</div></div>
+  <div id="preview-q" class="space-y-2 mb-2"><div class="text-cinza-500 text-sm py-3">✨ A IA está criando as melhores perguntas pra essa casa…</div></div>
   ${navWizard('etapaBack(3)', 'irPublicar()', 'Continuar →')}`;
 }
 async function setQtd(q){ W.qtd=q; document.querySelectorAll('[data-qtd]').forEach(b=>b.classList.toggle('sel', +b.dataset.qtd===q)); await regerar(); }
