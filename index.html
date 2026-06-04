@@ -479,11 +479,11 @@ async function publicar(){
 /* ====================================================================
    VIEW: RESPONDER (o link que vai no zap)
 ==================================================================== */
-let R = { pesquisa:null, func:null, idx:0, respostas:{}, concordou:false };
+let R = { pesquisa:null, func:null, idx:0, respostas:{}, comentarios:{}, concordou:false };
 async function viewResponder(root, id, token){
   const p = await DB.getPesquisa(id);
   if(!p){ root.innerHTML = telaErro('Pesquisa não encontrada'); return; }
-  R = { pesquisa:p, func:null, idx:0, respostas:{}, concordou:false };
+  R = { pesquisa:p, func:null, idx:0, respostas:{}, comentarios:{}, concordou:false };
   // link individual? trava no funcionário do token
   if(token){ R.func = (p.funcionarios||[]).find(f=>f.token===token) || null; }
   root.innerHTML = `<div class="max-w-md mx-auto min-h-screen flex flex-col">
@@ -547,17 +547,19 @@ function renderPergunta(){
   const q = R.pesquisa.perguntas[R.idx];
   const total = R.pesquisa.perguntas.length;
   const body = document.getElementById('rbody');
+  // caixinha opcional pra escrever mais (alimenta a análise da IA)
+  const cbox = `<textarea id="r-coment" rows="2" placeholder="✍️ Quer escrever um pouco mais? (opcional) — depois toque na resposta" class="w-full border border-cinza-200 rounded-card px-3 py-2 text-sm mt-4 focus:border-roxo-500 outline-none">${R.comentarios[R.idx]||''}</textarea>`;
   let input = '';
   if(q.tipo==='escala'){
     input = `<div class="flex justify-between gap-1 mt-6">
       ${FACES.map(f=>`<button onclick="responder(${f.v})" class="face-btn flex-1 flex flex-col items-center gap-1 py-3 rounded-card ${R.respostas[R.idx]===f.v?'face-sel':''}" style="background:${R.respostas[R.idx]===f.v?f.c+'22':'transparent'}">
         <span class="text-3xl">${f.e}</span><span class="text-[10px] text-cinza-500">${f.t}</span></button>`).join('')}
-    </div>`;
+    </div>${cbox}`;
   } else if(q.tipo==='enps'){
     input = `<div class="grid grid-cols-6 gap-2 mt-6">
       ${Array.from({length:11},(_,n)=>`<button onclick="responder(${n})" class="py-2.5 rounded-card border font-bold ${R.respostas[R.idx]===n?'bg-roxo-500 text-white border-roxo-500':'border-cinza-200 bg-white'}">${n}</button>`).join('')}
     </div>
-    <div class="flex justify-between text-[11px] text-cinza-400 mt-2"><span>0 — não recomendo</span><span>10 — recomendo muito</span></div>`;
+    <div class="flex justify-between text-[11px] text-cinza-400 mt-2"><span>0 — não recomendo</span><span>10 — recomendo muito</span></div>${cbox}`;
   } else {
     input = `<textarea id="r-aberta" rows="4" placeholder="Escreva aqui (opcional)…" class="w-full border border-cinza-200 rounded-card px-4 py-3 mt-5 focus:border-roxo-500 outline-none">${R.respostas[R.idx]||''}</textarea>
       <button onclick="responder(document.getElementById('r-aberta').value)" class="w-full bg-roxo-500 text-white font-bold py-3.5 rounded-pill mt-4">${R.idx+1<total?'Próxima':'Enviar respostas'}</button>`;
@@ -570,11 +572,13 @@ function renderPergunta(){
     <div class="fade"><h2 class="font-bold text-lg leading-snug">${q.texto}</h2>${input}</div>`;
 }
 async function responder(val){
+  const cm = document.getElementById('r-coment');
+  if(cm) R.comentarios[R.idx] = cm.value.trim();
   R.respostas[R.idx] = val;
   const total = R.pesquisa.perguntas.length;
   if(R.idx+1 < total){ R.idx++; renderPergunta(); return; }
   // fim — monta e salva
-  const itens = R.pesquisa.perguntas.map((q,i)=>({ pilar:q.pilar, tipo:q.tipo, valor:R.respostas[i] ?? null }));
+  const itens = R.pesquisa.perguntas.map((q,i)=>({ pilar:q.pilar, tipo:q.tipo, valor:R.respostas[i] ?? null, comentario:R.comentarios[i]||null }));
   await DB.salvarResposta({
     id: uid(), pesquisa_id: R.pesquisa.id,
     func_id: R.pesquisa.anonima ? null : (R.func?.id||null),
@@ -645,7 +649,7 @@ async function viewDashboard(root, id){
 
     <!-- Comentários abertos -->
     ${m.comentarios.length?`<div class="bg-white rounded-card shadow-card p-4">
-      <div class="text-sm font-bold mb-2">💬 O que pediram pra mudar</div>
+      <div class="text-sm font-bold mb-2">💬 Comentários dos funcionários</div>
       <div class="space-y-2">${m.comentarios.map(c=>`<div class="text-sm bg-cinza-50 rounded-card px-3 py-2 border border-cinza-100">"${c}"</div>`).join('')}</div>
     </div>`:''}
 
@@ -667,6 +671,8 @@ function metricas(p, resp){
     if(it.tipo==='escala' && typeof it.valor==='number'){ (byPilar[it.pilar] ??= []).push(it.valor); }
     if(it.tipo==='enps' && typeof it.valor==='number'){ enpsVals.push(it.valor); }
     if(it.tipo==='aberta' && it.valor && String(it.valor).trim()){ comentarios.push(String(it.valor).trim()); }
+    // comentário opcional embaixo de qualquer pergunta
+    if(it.comentario && String(it.comentario).trim()){ comentarios.push(String(it.comentario).trim()); }
   }));
   const pilares = Object.entries(byPilar).map(([id,vals])=>{
     const meta = PILARES.find(x=>x.id===id)||{nome:id,emoji:'•'};
