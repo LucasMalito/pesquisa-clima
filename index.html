@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Botequim Clima — Pesquisa de Clima automática no Zap</title>
+<link rel="icon" href="imagens/logo.png">
+<link rel="apple-touch-icon" href="imagens/logo.png">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -214,8 +216,8 @@ function topbar(titulo, voltar){
   return `<header class="bg-gradient-to-r from-roxo-700 to-roxo-900 text-white">
     <div class="max-w-5xl mx-auto px-5 py-4 flex items-center gap-3">
       ${voltar?`<a href="${voltar}" class="w-9 h-9 grid place-items-center rounded-lg bg-white/15 hover:bg-white/25">
-        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></a>`:`
-      <div class="w-9 h-9 grid place-items-center rounded-lg bg-white/15 font-extrabold">B</div>`}
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg></a>`:''}
+      <div class="w-9 h-9 rounded-lg bg-white overflow-hidden grid place-items-center shadow-sm"><img src="imagens/logo.png" class="w-full h-full object-contain"></div>
       <div class="leading-tight">
         <div class="font-extrabold text-[15px]">Botequim<span class="font-light opacity-80">Clima</span></div>
         <div class="text-[10px] opacity-60 uppercase tracking-wider">${titulo}</div>
@@ -252,7 +254,7 @@ async function viewHome(root){
     </div>
     ${lista.length===0 ? `
       <div class="bg-white rounded-card shadow-card p-10 text-center">
-        <div class="text-5xl mb-3">📊</div>
+        <img src="imagens/empty.png" class="w-44 mx-auto mb-2">
         <p class="font-semibold">Nenhuma pesquisa ainda</p>
         <p class="text-cinza-500 text-sm mb-5">Crie a primeira em menos de 2 minutos.</p>
         <a href="#/criar" class="inline-block bg-roxo-500 text-white font-semibold text-sm px-5 py-2.5 rounded-pill">Criar primeira pesquisa</a>
@@ -444,8 +446,9 @@ function etapaBack(n){ etapa=n; renderEtapa(); }
 
 // --- Etapa 3: contexto pra IA
 function etapaContexto(){
-  return `<h2 class="text-lg font-extrabold mb-1">Conte pra IA sobre a casa</h2>
-  <p class="text-cinza-500 text-sm mb-5">Quanto melhor o contexto, melhores as perguntas que a IA cria.</p>
+  return `<img src="imagens/ia.png" class="w-28 mx-auto mb-1">
+  <h2 class="text-lg font-extrabold mb-1 text-center">Conte pra IA sobre a casa</h2>
+  <p class="text-cinza-500 text-sm mb-5 text-center">Quanto melhor o contexto, melhores as perguntas que a IA cria.</p>
   <label class="block text-sm font-semibold mb-1">Que tipo de operação é?</label>
   <input id="c-tipo" value="${W.contexto.tipo}" placeholder="Ex: bar de petiscos, 2 turnos, salão + cozinha" class="w-full border border-cinza-200 rounded-card px-4 py-3 mb-4 focus:border-roxo-500 outline-none">
   <label class="block text-sm font-semibold mb-1">O que você mais quer descobrir?</label>
@@ -586,7 +589,7 @@ function renderConsent(){
   const nome = R.func ? R.func.nome.split(' ')[0] : null;
   document.getElementById('rbody').innerHTML = `
     <div class="text-center mb-6">
-      <div class="text-4xl mb-2">👋</div>
+      <img src="imagens/welcome.png" class="w-36 mx-auto mb-1">
       <div class="font-bold text-lg">${nome? 'Oi, '+nome+'!' : 'Bem-vindo(a)!'}</div>
       <p class="text-cinza-500 text-sm mt-1">São ${R.pesquisa.perguntas.length} perguntas rápidas. Leva uns 2 minutinhos.</p>
     </div>
@@ -658,7 +661,11 @@ async function avancarPergunta(){
     func_nome: R.pesquisa.anonima ? null : (R.func?.nome||null),
     itens, criado_em: Date.now ? Date.now() : 0,
   });
-  document.getElementById('rbody').innerHTML = telaInfo('Prontinho! Obrigado por responder 💜<br>Sua opinião faz diferença.','🎉');
+  document.getElementById('rbody').innerHTML = `<div class="text-center py-12">
+    <img src="imagens/success.png" class="w-44 mx-auto mb-3">
+    <p class="text-cinza-900 font-bold text-lg">Prontinho! 💜</p>
+    <p class="text-cinza-500 text-sm mt-1">Obrigado por responder — sua opinião faz diferença.</p>
+  </div>`;
 }
 function telaInfo(msg, emoji){ return `<div class="text-center py-16"><div class="text-5xl mb-4">${emoji}</div><p class="text-cinza-700 font-medium">${msg}</p></div>`; }
 function telaErro(msg){ return `<div class="max-w-md mx-auto py-20 text-center"><div class="text-5xl mb-3">😕</div><p class="font-semibold">${msg}</p><a href="#/" class="text-roxo-600 text-sm font-semibold">Voltar</a></div>`; }
