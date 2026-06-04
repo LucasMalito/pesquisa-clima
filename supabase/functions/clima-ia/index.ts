@@ -13,6 +13,16 @@ async function claude(messages: unknown, system: string, max = 1500) {
   const j = await r.json();
   return j?.content?.[0]?.text ?? "";
 }
+function cleanHTML(s: string) {
+  return s
+    .replace(/```[a-z]*/gi, "").replace(/```/g, "")
+    .replace(/<!DOCTYPE[^>]*>/gi, "")
+    .replace(/<\/?html[^>]*>/gi, "")
+    .replace(/<head>[\s\S]*?<\/head>/gi, "")
+    .replace(/<\/?body[^>]*>/gi, "")
+    .replace(/<meta[^>]*>/gi, "").replace(/<title>[\s\S]*?<\/title>/gi, "")
+    .trim();
+}
 function pickJSON(s: string) {
   const a = s.indexOf("{"), b = s.lastIndexOf("}");
   const c = s.indexOf("["), d = s.lastIndexOf("]");
@@ -49,10 +59,10 @@ Deno.serve(async (req) => {
     // ---- ANALISAR (panorama personalizado pro dono) ----
     if (acao === "analisar" || acao === "resumir") {
       const curto = acao === "resumir";
-      const sys = `Você é um consultor de RH analisando uma pesquisa de clima de um bar/restaurante chamado "${b.empresa || "a casa"}". Fale direto com o DONO, em português simples, sem jargão. ${curto ? "Seja MUITO curto (2-3 frases + 1 ação)." : "Dê um panorama em 4 blocos curtos: (1) Resumo geral, (2) Pontos fortes, (3) Pontos de atenção, (4) 3 ações práticas pra esta semana."} Use os comentários dos funcionários pra dar profundidade. Responda em HTML simples (use <b>, <br>, <ul><li>). Não invente números que não estão nos dados.`;
+      const sys = `Você é um consultor de RH analisando uma pesquisa de clima de um bar/restaurante chamado "${b.empresa || "a casa"}". Fale direto com o DONO, em português simples, sem jargão. ${curto ? "Seja MUITO curto (2-3 frases + 1 ação)." : "Dê um panorama em 4 blocos curtos: (1) Resumo geral, (2) Pontos fortes, (3) Pontos de atenção, (4) 3 ações práticas pra esta semana."} Use os comentários dos funcionários pra dar profundidade. Não invente números que não estão nos dados. IMPORTANTE: responda APENAS com HTML inline simples — só as tags <b>, <br>, <p>, <ul>, <li>. NÃO use blocos de código, NÃO use crases nem \`\`\`, NÃO inclua <!DOCTYPE>, <html>, <head>, <title> ou <body>. Comece direto no conteúdo.`;
       const dados = `Métricas: ${JSON.stringify(b.metricas || {})}. Comentários dos funcionários: ${JSON.stringify((b.metricas?.comentarios) || b.comentarios || [])}.`;
       const txt = await claude([{ role: "user", content: dados }], sys, curto ? 400 : 1200);
-      return new Response(JSON.stringify({ texto: txt }), { headers: CORS });
+      return new Response(JSON.stringify({ texto: cleanHTML(txt) }), { headers: CORS });
     }
 
     return new Response(JSON.stringify({ error: "acao desconhecida" }), { headers: CORS, status: 400 });
